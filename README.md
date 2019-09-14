@@ -12,12 +12,12 @@ Currently, it provides:
 - A wrapper for storing dialogue state: `BaseStorage` and its flavors (specifially, `MongoBasedStorage`)
 - Yet another wrapper for serving your bot as a Flask application
 
-This [package](https://pypi.org/project/tgalice/) may be installed with 
-```
-pip install tgalice
-```
+This [package](https://pypi.org/project/tgalice/) may be installed with `pip install tgalice`
 
-The components of `tgalice` may be combined as follows:
+To create your own bot, you need either to write a config for an existing dialog manager, 
+or to inherit your own dialog manager from `BaseDialogManager`. 
+
+The components of `tgalice` may be combined into a working app as follows:
 ```python
 import tgalice
 
@@ -46,7 +46,7 @@ If you want to test your app locally, you can run it with command line args:
 to create a tunnel from your machine into the internet. This is probably the simplest way to test Alice skills 
 without deploying them anywhere .
 
-The [examples](https://github.com/avidale/tgalice/tree/master/example) directory contains more detailed examples 
+The [examples](https://github.com/avidale/tgalice/tree/master/examples) directory contains more detailed examples 
 of how to create dialogs and serve the bot. 
 
 <a id="footnote1">*</a> The Telegram wrapper is based on the 
