@@ -1,4 +1,6 @@
-# -*- coding: utf-8 -*-
+"""
+This is the main package docstring, by the way
+"""
 from __future__ import print_function
 
 from tgalice import dialog, dialog_manager, dialog_connector, storage, nlu, nlg, testing, utils
