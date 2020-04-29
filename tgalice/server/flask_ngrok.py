@@ -1,5 +1,5 @@
 """
-This module has been copied from https://github.com/gstaff/flask-ngrok
+This module has been copied from https://github.com/gstaff/flask-ngrok with a few small modification
 """
 
 import atexit
@@ -30,7 +30,7 @@ def _get_command():
     return command
 
 
-def _run_ngrok(port):
+def run_ngrok(port, wait=5, retries=10):
     command = _get_command()
     ngrok_path = str(Path(tempfile.gettempdir(), "ngrok"))
     _download_ngrok(ngrok_path)
@@ -40,7 +40,17 @@ def _run_ngrok(port):
     atexit.register(ngrok.terminate)
     localhost_url = "http://localhost:4040/api/tunnels"  # Url with tunnel details
     time.sleep(1)
-    tunnel_url = requests.get(localhost_url).text  # Get the tunnel information
+    tunnel_url = None
+
+    for i in range(retries):
+        try:
+            tunnel_url = requests.get(localhost_url).text  # Get the tunnel information
+            break
+        except requests.exceptions.ConnectionError as e:
+            print('Will retry connecting to ngrok api, got error {}'.format(e))
+            time.sleep(wait)
+    if tunnel_url is None:
+        raise ValueError('Could not connect to ngrok api, exiting')
     j = json.loads(tunnel_url)
 
     tunnel_url = j['tunnels'][0]['public_url']  # Do the parsing of the get
@@ -59,8 +69,7 @@ def _download_ngrok(ngrok_path):
     elif system == "Linux":
         url = "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
     else:
-        # todo: make it work with ubuntu
-        raise Exception(f"{system} is not supported")
+        raise Exception("{} is not supported".format(system))
     download_path = _download_file(url)
     with zipfile.ZipFile(download_path, "r") as zip_ref:
         zip_ref.extractall(ngrok_path)
@@ -76,9 +85,9 @@ def _download_file(url):
 
 
 def start_ngrok(port):
-    ngrok_address = _run_ngrok(port)
-    print(f" * Running on {ngrok_address}")
-    print(f" * Traffic stats available on http://127.0.0.1:4040")
+    ngrok_address = run_ngrok(port)
+    print(" * Running on {}".format(ngrok_address))
+    print(" * Traffic stats available on http://127.0.0.1:4040")
 
 
 def run_with_ngrok(app):

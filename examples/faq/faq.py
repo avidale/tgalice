@@ -1,4 +1,7 @@
 import tgalice
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 TEXT_HELP = (

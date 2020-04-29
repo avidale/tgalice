@@ -29,11 +29,13 @@ class FileBasedStorage(BaseStorage):
                 self.dump_dict(path, {})
 
     def dump_dict(self, filename, data):
-        with open(filename, 'w') as f:
-            json.dump(data, f, indent=2)
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
     def load_dict(self, filename):
-        with open(filename, 'r') as f:
+        if not os.path.exists(filename):
+            return {}
+        with open(filename, 'r', encoding='utf-8') as f:
             result = json.load(f)
         return result
 
@@ -57,10 +59,11 @@ class MongoBasedStorage(BaseStorage):
     KEY_NAME = 'key'
     VALUE_NAME = 'value'
 
-    def __init__(self, database, collection_name='sessions'):
+    def __init__(self, database=None, collection_name='sessions', collection=None):
+        assert database or collection
         super(MongoBasedStorage, self).__init__()
         # we assume that the database has PyMongo interface
-        self._collection = database.get_collection(collection_name)
+        self._collection = collection or database.get_collection(collection_name)
         database_utils.ensure_mongo_index(index_name=self.KEY_NAME, collection=self._collection)
 
     def get(self, key):
@@ -99,3 +102,6 @@ class S3BasedStorage(BaseStorage):
                 return {}
             else:
                 raise e
+
+    def set(self, key, value):
+        self.s3_client.put_object(Bucket=self.bucket_name, Key=self.modify_key(key), Body=json.dumps(value))

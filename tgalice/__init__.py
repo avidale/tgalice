@@ -3,7 +3,7 @@ This is the main package docstring, by the way
 """
 from __future__ import print_function
 
-from tgalice import dialog, dialog_manager, dialog_connector, storage, nlu, nlg, testing, utils
+from tgalice import dialog, dialog_manager, interfaces, storage, nlu, nlg, testing, utils, dialog_connector
 from tgalice.server import flask_server
 from tgalice.storage import session_storage, message_logging
 from tgalice.dialog_manager.base import COMMANDS

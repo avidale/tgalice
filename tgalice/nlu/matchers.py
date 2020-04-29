@@ -1,7 +1,10 @@
 import math
 import textdistance
+import re
+import typing
 
-from collections import Counter, Callable, defaultdict
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Mapping
 from itertools import chain
 
 from ..nlu import basic_nlu
@@ -22,33 +25,91 @@ except ImportError:
     IMPORTED_NUMPY = False
 
 
+EPSILON = 1e-10
+
+
 class BaseMatcher:
     """ A base class for text classification with confidence """
-    def __init__(self, threshold=0.5):
+    def __init__(self, threshold=0.5, thresholds=None):
+        """ Create a base matcher
+        parameters:
+        - threshold: the minimal allowed similarity between the text and the example for a successful match
+        - thresholds: an optional dict of label-wise thresholds
+        """
         self.threshold = threshold
+        self.thresholds = thresholds or {}
 
     def fit(self, texts, labels):
         raise NotImplementedError()
 
-    def match(self, text, use_threshold=True):
+    def get_threshold(self, label):
+        return self.thresholds.get(label, self.threshold)
+
+    def match(self, text: str, use_threshold=True):
+        """ Return the label which is most similar to the text and its score.
+        If no example is similar enough, the winner label will be None.
+        """
         scores, labels = self.get_scores(text)
-        best_score = 0.0
+        best_score = -math.inf
         winner_label = None
         for score, label in zip(scores, labels):
-            if (score >= self.threshold or not use_threshold) and score > best_score:
+            if (score >= self.get_threshold(label) or not use_threshold) and score > best_score:
                 best_score = score
                 winner_label = label
         return winner_label, best_score
 
-    def get_scores(self, text):
+    def get_scores(self, text: str) -> typing.Tuple[typing.List[float], typing.List]:
+        """ Return the list of matching scores and their corresponding labels """
         raise NotImplementedError()
 
+    def aggregate_scores(self, text: str, use_threshold=True) -> Counter:
+        """ Return a dict with the highest matching score for each label. """
+        result = Counter()
+        scores, labels = self.get_scores(text)
+        for score, label in zip(scores, labels):
+            if score >= self.get_threshold(label) or not use_threshold:
+                result[label] = max(score, result.get(label, -math.inf))
+        return result
 
-class WeightedAverageMatcher(BaseMatcher):
-    def __init__(self, matchers, weights=None, **kwargs):
-        super(WeightedAverageMatcher, self).__init__(**kwargs)
+
+class AggregationMatcher(BaseMatcher):
+    def __init__(self, matchers, **kwargs):
+        super(AggregationMatcher, self).__init__(**kwargs)
         assert len(matchers) > 0, 'list of matchers should be non-empty'
         self.matchers = matchers
+
+    def fit(self, texts, labels):
+        for m in self.matchers:
+            m.fit(texts, labels)
+
+    def _apply_matchers(self, text, use_threshold=False):
+        label2matchers2scores = defaultdict(lambda: defaultdict(lambda: -math.inf))
+        for i, m in enumerate(self.matchers):
+            scores, labels = m.get_scores(text)
+            for label, score in zip(labels, scores):
+                if score > label2matchers2scores[label][i]:
+                    if use_threshold and score < self.get_threshold(label):
+                        continue
+                    label2matchers2scores[label][i] = score
+        return label2matchers2scores
+
+
+class MaxMatcher(AggregationMatcher):
+    def get_scores(self, text):
+        label2matchers2scores = self._apply_matchers(text)
+        labels = []
+        scores = []
+        for l, ldict in label2matchers2scores.items():
+            if not ldict:
+                continue
+            labels.append(l)
+            scores.append(max(ldict.values()))
+        return scores, labels
+
+
+class WeightedAverageMatcher(AggregationMatcher):
+    def __init__(self, matchers, weights=None, **kwargs):
+        super(WeightedAverageMatcher, self).__init__(matchers, **kwargs)
         if weights is None:
             weights = [1.0 for m in self.matchers]
         else:
@@ -56,22 +117,14 @@ class WeightedAverageMatcher(BaseMatcher):
         total_weight = float(sum(weights))
         self.weights = [w / total_weight for w in weights]
 
-    def fit(self, texts, labels):
-        for m in self.matchers:
-            m.fit(texts, labels)
-
     def get_scores(self, text):
-        label2matchers2scores = defaultdict(lambda: defaultdict(lambda: 0))
-        for i, m in enumerate(self.matchers):
-            scores, labels = m.get_scores(text)
-            for l, s in zip(labels, scores):
-                if s > label2matchers2scores[l][i]:
-                    label2matchers2scores[l][i] = s
+        label2matchers2scores = self._apply_matchers(text)
         labels = []
         scores = []
         for l, ldict in label2matchers2scores.items():
+            score = sum(w * ldict[i] for i, w in enumerate(self.weights))
             labels.append(l)
-            scores.append(sum(w * ldict[i] for i, w in enumerate(self.weights)))
+            scores.append(score)
         return scores, labels
 
 
@@ -90,13 +143,71 @@ class ModelBasedMatcher(BaseMatcher):
         return scores, labels
 
 
+class RegexMatcher(BaseMatcher):
+    """ This matcher returns matching score 1,
+    if the text matches one of the provided expressions for the label, and 0 otherwise.
+    The parameter `add_end` forcibly wraps each expression between `^` and `$` symbols, disabling partial prefix match.
+    """
+    def __init__(self, *args, add_end=True, **kwargs):
+        super(RegexMatcher, self).__init__(*args, **kwargs)
+        self.add_end = add_end
+        self.expressions = {}
+
+    def fit(self, texts, labels):
+        parts = defaultdict(list)
+        for text, label in zip(texts, labels):
+            parts[label].append(text)
+        self.expressions = {
+            label: re.compile('(?:{})'.format('|'.join([self._wrap(e) for e in expressions])))
+            for label, expressions in parts.items()
+        }
+        for label, expressions in parts.items():
+            print(label, '(?:{})'.format('|'.join([self._wrap(e) for e in expressions])))
+
+    def _wrap(self, text):
+        if self.add_end:
+            return '^{}$'.format(text)
+        return text
+
+    def get_scores(self, text):
+        scores = []
+        labels = []
+        for label, expression in self.expressions.items():
+            labels.append(label)
+            scores.append(float(bool(re.match(expression, text))))
+        return scores, labels
+
+
 class PairwiseMatcher(BaseMatcher):
-    """ Classify text using 1-nearest neighbor by some similarity metric """
-    def __init__(self, *args, text_normalization='fast', **kwargs):
-        super(PairwiseMatcher, self).__init__(*args, **kwargs)
+    """
+    Classify text using 1-nearest neighbor by some similarity metric.
+    This is an abstract class; its descendants should implement the specific metric to compare preprocessed texts.
+
+    Parameters
+    ----------
+    text_normalization: string or callable
+        Describes how to preprocess the texts before matching.
+        Supported string values: 'fast' to lowercase and remove unusual characters; 'fast_lemmatize' to additionally
+        lemmatize words (russian only). Callable values should accept and return strings.
+    stopwords: iterable or mapping
+        Lists the words that should be discarded (if it is a list) or paid less attention
+        (if it is a dict with values in (0, 1) during matching. It may not be supported by all descendant matchers.
+    kwargs: dict
+        Passed to the parent constructor (BaseMatcher)
+    """
+    def __init__(self, text_normalization='fast', stopwords=None, **kwargs):
+        super(PairwiseMatcher, self).__init__(**kwargs)
         self.text_normalization = text_normalization
         self._texts = []
         self._labels = []
+
+        if stopwords is None:
+            stopwords = {}
+        if isinstance(stopwords, Iterable) and not isinstance(stopwords, Mapping):
+            stopwords = {w: 0 for w in stopwords}
+        # todo: delay stopwords preprocessing until the descendant class has been initialized
+        stopwords = {PairwiseMatcher.preprocess(self, k): v for k, v in stopwords.items()}
+        self.stopwords = stopwords
 
     def preprocess(self, text):
         if self.text_normalization == 'fast':
@@ -126,8 +237,8 @@ class ExactMatcher(PairwiseMatcher):
 
 
 class TextDistanceMatcher(PairwiseMatcher):
-    def __init__(self, *args, by_words=True, metric='cosine', **kwargs):
-        super(TextDistanceMatcher, self).__init__(*args, **kwargs)
+    def __init__(self, by_words=True, metric='cosine', **kwargs):
+        super(TextDistanceMatcher, self).__init__(**kwargs)
         self.by_words = by_words
         self.metric = metric
         self.fun = getattr(textdistance, metric).normalized_similarity
@@ -140,6 +251,13 @@ class TextDistanceMatcher(PairwiseMatcher):
 
     def compare(self, one, another):
         return self.fun(one, another)
+
+
+class LevenshteinMatcher(TextDistanceMatcher):
+    def __init__(self, **kwargs):
+        kwargs['by_words'] = False
+        kwargs['metric'] = 'levenshtein'
+        super(LevenshteinMatcher, self).__init__(**kwargs)
 
 
 class JaccardMatcher(PairwiseMatcher):
@@ -156,8 +274,8 @@ class JaccardMatcher(PairwiseMatcher):
 
 
 class TFIDFMatcher(PairwiseMatcher):
-    def __init__(self, *args, smooth=2.0, ngram=1, **kwargs):
-        super(TFIDFMatcher, self).__init__(*args, **kwargs)
+    def __init__(self, smooth=2.0, ngram=1, **kwargs):
+        super(TFIDFMatcher, self).__init__(**kwargs)
         self.smooth = smooth
         self.ngram = ngram
         self.vocab = Counter()
@@ -169,11 +287,14 @@ class TFIDFMatcher(PairwiseMatcher):
     def preprocess(self, text):
         text = super(TFIDFMatcher, self).preprocess(text)
         tf = Counter(self._tokenize(text))
-        return {w: tf / math.log(self.smooth + self.vocab[w]) for w, tf in tf.items()}
+        return {
+            w: tf / math.log(self.smooth + self.vocab[w]) * self.stopwords.get(w, 1)
+            for w, tf in tf.items()
+        }
 
     def compare(self, one, another):
         dot = self._dot(one, another)
-        if dot < 1e-6:
+        if abs(dot) < 1e-6:
             return 0.0
         return dot / math.sqrt(self._norm(one) * self._norm(another))
 
@@ -193,15 +314,15 @@ class TFIDFMatcher(PairwiseMatcher):
 
 class W2VMatcher(PairwiseMatcher):
     """ Compare texts by cosine similarity of their mean word vectors """
-    def __init__(self, w2v, normalize_word_vec=True, *args, **kwargs):
-        super(W2VMatcher, self).__init__(*args, **kwargs)
+    def __init__(self, w2v, normalize_word_vec=True, **kwargs):
+        super(W2VMatcher, self).__init__(**kwargs)
         self.w2v = w2v
         self.normalize_word_vec = normalize_word_vec
 
     def vec_from_word(self, word):
         vec = self.w2v[word]
         if self.normalize_word_vec:
-            vec = vec / sum(vec**2)**0.5
+            vec = vec / max(sum(vec**2), EPSILON) ** 0.5
         return vec
 
     def preprocess(self, text):
@@ -211,7 +332,7 @@ class W2VMatcher(PairwiseMatcher):
         if len(vecs) == 0:
             return None
         result = sum(vecs)
-        result = result / sum(result**2)**0.5
+        result = result / max(sum(result**2), EPSILON) ** 0.5
         return result
 
     def compare(self, one, another):
@@ -238,19 +359,19 @@ class WMDMatcher(PairwiseMatcher):
         .. Matt Kusner et al. "From Word Embeddings To Document Distances".
     """
 
-    def __init__(self, w2v, normalize_word_vec=True, *args, **kwargs):
+    def __init__(self, w2v, normalize_word_vec=True, **kwargs):
         if not IMPORTED_NUMPY:
             raise ImportError('When using WMDMatcher, numpy should be installed')
         if not IMPORTED_EMD:
             raise ImportError('When using WMDMatcher, pyemd should be installed')
-        super(WMDMatcher, self).__init__(*args, **kwargs)
+        super(WMDMatcher, self).__init__(**kwargs)
         self.w2v = w2v
         self.normalize_word_vec = normalize_word_vec
 
     def vec_from_word(self, word):
         vec = self.w2v[word]
         if self.normalize_word_vec:
-            vec = vec / sum(vec ** 2) ** 0.5
+            vec = vec / max(sum(vec ** 2), EPSILON) ** 0.5
         return vec
 
     def preprocess(self, text):

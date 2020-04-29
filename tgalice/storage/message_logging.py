@@ -2,11 +2,16 @@ import copy
 import logging
 
 from datetime import datetime
-from telebot import types as teletypes
 
 from tgalice.dialog import Context, Response
 from tgalice.dialog.names import SOURCES
 from tgalice.storage.database_utils import get_mongo_or_mock
+
+
+try:
+    import pymongo
+except ModuleNotFoundError:
+    pymongo = None
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +35,7 @@ class LoggedMessage:
             source
             data        (original message in Alice)
             label       (something like intent)
+            request_id  (this id the same for request and response, useful for joining logs)
         """
 
     def save_to_mongo(self, collection):
@@ -57,6 +63,10 @@ class LoggedMessage:
             kwargs['message_id'] = message.message_id
             kwargs['username'] = message.chat.username
             serializable_message = {'message': str(message)}
+        elif context.source == SOURCES.VK:
+            serializable_message = {'message': context.raw_message.to_json()}
+        if context.request_id is not None:
+            kwargs['request_id'] = context.request_id
         return cls(
             text=context.message_text,
             user_id=context.user_id,
@@ -76,6 +86,8 @@ class LoggedMessage:
             # todo: maybe somehow get message_id for output messages
             if 'reply_markup' in data:
                 data['reply_markup'] = data['reply_markup'].to_json()
+        if context.request_id is not None:
+            kwargs['request_id'] = context.request_id
         return cls(
             text=response.text,
             user_id=context.user_id,
@@ -123,13 +135,15 @@ class BaseMessageLogger:
 
 
 class MongoMessageLogger(BaseMessageLogger):
-    def __init__(self, collection=None, database=None, collection_name='message_logs', **kwargs):
+    def __init__(self, collection=None, database=None, collection_name='message_logs', write_concern=0, **kwargs):
         super(MongoMessageLogger, self).__init__(**kwargs)
         self.collection = collection
         if self.collection is None:
             if database is None:
                 database = get_mongo_or_mock()
-            self.collection = database.get_collection(collection_name)
+            if pymongo and not isinstance(write_concern, pymongo.write_concern.WriteConcern):
+                write_concern = pymongo.write_concern.WriteConcern(w=write_concern)
+            self.collection = database.get_collection(collection_name, write_concern=write_concern)
 
     def save_a_message(self, message_dict):
         self.collection.insert_one(message_dict)
