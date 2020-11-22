@@ -317,7 +317,7 @@ class TFIDFMatcher(PairwiseMatcher):
         self.vocab = Counter()
 
     def fit(self, texts, labels):
-        self.vocab = Counter(w for t in texts for w in self._tokenize(t))
+        self.vocab = Counter(w for t in texts for w in self._tokenize(super(TFIDFMatcher, self).preprocess(t)))
         return super(TFIDFMatcher, self).fit(texts, labels)
 
     def preprocess(self, text):
