@@ -189,7 +189,11 @@ class RegexMatcher(BaseMatcher):
             parts[label].append(text)
         for label, expressions in parts.items():
             if self.merge:
-                self.expressions.append(self.re.compile('(?:{})'.format('|'.join([self._wrap(e) for e in expressions]))))
+                self.expressions.append(
+                    self.re.compile('(?:{})'.format(
+                        '|'.join([self._wrap(e) for e in expressions])
+                    ))
+                )
                 self.labels.append(label)
             else:
                 for e in expressions:
